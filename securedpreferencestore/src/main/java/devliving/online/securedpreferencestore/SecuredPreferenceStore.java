@@ -23,12 +23,17 @@ import javax.crypto.NoSuchPaddingException;
  */
 public class SecuredPreferenceStore implements SharedPreferences {
 
-    final String PREF_FILE_NAME = "SPS_file";
+    private static final String PREF_FILE_NAME = "SPS_file";
 
-    SharedPreferences mPrefs;
-    EncryptionManager mEncryptionManager;
+    private static SharedPreferences mPrefs;
+    private static EncryptionManager mEncryptionManager;
+    private static SecuredPreferenceStore mInstance;
 
-    static SecuredPreferenceStore mInstance;
+    /*
+    * Check Keystore Key
+    */
+    private static final String KEY_VALID_KEYSTORE = "valid_keystore";
+    private static final String VALID_KEYSTORE_VALUE = "ValidKeystore";
 
     private SecuredPreferenceStore(Context appContext) throws CertificateException, NoSuchAlgorithmException, KeyStoreException, UnrecoverableEntryException, NoSuchProviderException, InvalidAlgorithmParameterException, IOException, NoSuchPaddingException, InvalidKeyException {
         mPrefs = appContext.getSharedPreferences(PREF_FILE_NAME, Context.MODE_PRIVATE);
@@ -40,14 +45,30 @@ public class SecuredPreferenceStore implements SharedPreferences {
         if (mInstance == null) {
             try {
                 mInstance = new SecuredPreferenceStore(appContext);
-            } catch (Exception e) {
+                mPrefs.edit().putString(KEY_VALID_KEYSTORE, VALID_KEYSTORE_VALUE).apply();
+            } catch (CertificateException | NoSuchAlgorithmException | KeyStoreException | UnrecoverableEntryException | NoSuchProviderException | InvalidAlgorithmParameterException | IOException | NoSuchPaddingException | InvalidKeyException e) {
                 e.printStackTrace();
-
-                throw new RuntimeException(e);
             }
         }
 
+        if (!isKeyStoreValid()) {
+            recoverFromKeyStoreLoss();
+            mInstance = null;
+            return getSharedInstance(appContext);
+        }
+
         return mInstance;
+    }
+
+    private static boolean isKeyStoreValid() {
+        String decodedValidKeyStoreValue = mPrefs.getString(KEY_VALID_KEYSTORE, "");
+        return SecuredPreferenceStore.VALID_KEYSTORE_VALUE.equals(decodedValidKeyStoreValue);
+    }
+
+    private static void recoverFromKeyStoreLoss() {
+        //If there is some problem with the key, restart the keystore
+        mEncryptionManager.clearKeyStore();
+        mPrefs.edit().clear().apply();
     }
 
     public EncryptionManager getEncryptionManager() {
@@ -74,20 +95,23 @@ public class SecuredPreferenceStore implements SharedPreferences {
     @Override
     public String getString(String s, String s1) {
         try {
-            String key = mEncryptionManager.getHashed(s);
+            String key = EncryptionManager.getHashed(s);
             String value = mPrefs.getString(key, null);
             if (value != null) return mEncryptionManager.decrypt(value);
         } catch (Exception e) {
+            if (e instanceof  InvalidKeyException ) {
+                // key is no longer available in the keystore, reset
+                recoverFromKeyStoreLoss();
+            }
             e.printStackTrace();
         }
-
         return s1;
     }
 
     @Override
     public Set<String> getStringSet(String s, Set<String> set) {
         try {
-            String key = mEncryptionManager.getHashed(s);
+            String key = EncryptionManager.getHashed(s);
             Set<String> eSet = mPrefs.getStringSet(key, null);
 
             if (eSet != null) {
@@ -155,7 +179,7 @@ public class SecuredPreferenceStore implements SharedPreferences {
     @Override
     public boolean contains(String s) {
         try {
-            String key = mEncryptionManager.getHashed(s);
+            String key = EncryptionManager.getHashed(s);
             return mPrefs.contains(key);
         } catch (Exception e) {
             e.printStackTrace();
@@ -191,7 +215,7 @@ public class SecuredPreferenceStore implements SharedPreferences {
         @Override
         public SharedPreferences.Editor putString(String s, String s1) {
             try {
-                String key = mEncryptionManager.getHashed(s);
+                String key = EncryptionManager.getHashed(s);
                 String value = mEncryptionManager.encrypt(s1);
                 mEditor.putString(key, value);
             } catch (Exception e) {
@@ -204,8 +228,8 @@ public class SecuredPreferenceStore implements SharedPreferences {
         @Override
         public SharedPreferences.Editor putStringSet(String s, Set<String> set) {
             try {
-                String key = mEncryptionManager.getHashed(s);
-                Set<String> eSet = new HashSet<String>(set.size());
+                String key = EncryptionManager.getHashed(s);
+                Set<String> eSet = new HashSet<>(set.size());
 
                 for (String val : set) {
                     eSet.add(mEncryptionManager.encrypt(val));
